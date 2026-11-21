@@ -1,0 +1,432 @@
+--- Parses, compares, and matches semantic versions.
+---
+--- Versions follow Semantic Versioning 2.0.0. Ranges follow the syntax of
+--- npm: comparators, `^`, `~`, `x` wildcards, hyphen ranges, and `||`.
+---
+--- @package semver
+--- @version 0.1.0
+--- @lus 2.0
+--- @license 0BSD
+--- @repository https://github.com/lus-lang/atmos-semver
+
+local M = {}
+
+local Version = {}
+Version.__index = Version
+
+local function compare_ids(a, b)
+    local na, nb = math.tointeger(tonumber(a:match("^%d+$") and a)), math.tointeger(tonumber(b:match("^%d+$") and b))
+    if na and nb then
+        return na < nb and -1 or na > nb and 1 or 0
+    end
+    if na then
+        return -1
+    end
+    if nb then
+        return 1
+    end
+    return a < b and -1 or a > b and 1 or 0
+end
+
+local function compare(a, b)
+    for _, part in ipairs({ "major", "minor", "patch" }) do
+        if a[part] ~= b[part] then
+            return a[part] < b[part] and -1 or 1
+        end
+    end
+    local pa, pb = a.prerelease, b.prerelease
+    if #pa == 0 and #pb == 0 then
+        return 0
+    end
+    if #pa == 0 then
+        return 1
+    end
+    if #pb == 0 then
+        return -1
+    end
+    for i = 1, math.max(#pa, #pb) do
+        local x, y = pa[i], pb[i]
+        if x == nil then
+            return -1
+        end
+        if y == nil then
+            return 1
+        end
+        local c = compare_ids(x, y)
+        if c ~= 0 then
+            return c
+        end
+    end
+    return 0
+end
+
+Version.__eq = function(a, b) return compare(a, b) == 0 end
+Version.__lt = function(a, b) return compare(a, b) < 0 end
+Version.__le = function(a, b) return compare(a, b) <= 0 end
+Version.__tostring = function(v)
+    local text = `$(v.major).$(v.minor).$(v.patch)`
+    if #v.prerelease > 0 then
+        text = text .. "-" .. table.concat(v.prerelease, ".")
+    end
+    if #v.build > 0 then
+        text = text .. "+" .. table.concat(v.build, ".")
+    end
+    return text
+end
+
+local function number(text, what, source)
+    if text ~= "0" and text:sub(1, 1) == "0" then
+        error(`invalid version '$source': $what has a leading zero`, 3)
+    end
+    local n = math.tointeger(tonumber(text))
+    if n == nil then
+        error(`invalid version '$source': $what is too large`, 3)
+    end
+    return n
+end
+
+local function identifiers(text, what, source, numeric_rule)
+    local list = {}
+    if text == nil then
+        return list
+    end
+    for id in (text .. "."):gmatch("([^.]*)%.") do
+        if id == "" or not id:match("^[%w-]+$") then
+            error(`invalid version '$source': empty or invalid $what identifier`, 3)
+        end
+        if numeric_rule and id:match("^%d+$") and id ~= "0" and id:sub(1, 1) == "0" then
+            error(`invalid version '$source': $what identifier has a leading zero`, 3)
+        end
+        list[#list + 1] = id
+    end
+    return list
+end
+
+--- Parses a version and returns a version table.
+---
+--- The table has `major`, `minor`, and `patch` integers and `prerelease` and
+--- `build` lists of strings. Versions compare with `<`, `<=`, and `==`, and
+--- `tostring` formats them. A leading `v` or `=` is accepted. Any other
+--- invalid text raises an error that names the problem.
+--- @param text string The version.
+--- @return table
+function M.parse(text)
+    if getmetatable(text) == Version then
+        return text
+    end
+    local source = text
+    text = text:match("^%s*[v=]?(.-)%s*$")
+    local core, rest = text:match("^(%d+%.%d+%.%d+)(.*)$")
+    if core == nil then
+        error(`invalid version '$source'`, 2)
+    end
+    local pre, build
+    if rest ~= "" then
+        pre, build = rest:match("^%-([^+]*)%+?(.*)$")
+        if pre == nil then
+            build = rest:match("^%+(.*)$")
+            if build == nil then
+                error(`invalid version '$source'`, 2)
+            end
+        end
+        if build == "" and not rest:find("+", 1, true) then
+            build = nil
+        end
+    end
+    local ma, mi, pa = core:match("^(%d+)%.(%d+)%.(%d+)$")
+    return setmetatable({
+        major = number(ma, "major", source),
+        minor = number(mi, "minor", source),
+        patch = number(pa, "patch", source),
+        prerelease = identifiers(pre, "prerelease", source, true),
+        build = identifiers(build, "build", source, false),
+    }, Version)
+end
+
+--- Returns the parsed version, or `nil` when `text` is not a valid version.
+--- @param text string The version.
+--- @return table?
+function M.valid(text)
+    local ok, v = catch M.parse(text)
+    return ok and v or nil
+end
+
+--- Compares two versions and returns `-1`, `0`, or `1`.
+---
+--- Build metadata takes no part in the comparison.
+--- @param a string|table The first version.
+--- @param b string|table The second version.
+--- @return integer
+function M.compare(a, b)
+    return compare(M.parse(a), M.parse(b))
+end
+
+--- Returns a new version with one part increased.
+---
+--- `part` is `"major"`, `"minor"`, `"patch"`, or `"prerelease"`. Increasing a
+--- part sets the lower parts to zero and drops the prerelease. Increasing a
+--- prerelease adds 1 to its last numeric identifier, or appends `.0`, and
+--- `id` names the prerelease when the version has none.
+--- @param version string|table The version.
+--- @param part string The part to increase.
+--- @param id string? The prerelease name, such as `"beta"`.
+--- @return table
+function M.increment(version, part, id)
+    local v = M.parse(version)
+    local major, minor, patch = v.major, v.minor, v.patch
+    local pre = {}
+    if part == "major" then
+        if not (minor == 0 and patch == 0 and #v.prerelease > 0) then
+            major = major + 1
+        end
+        minor, patch = 0, 0
+    elseif part == "minor" then
+        if not (patch == 0 and #v.prerelease > 0) then
+            minor = minor + 1
+        end
+        patch = 0
+    elseif part == "patch" then
+        if #v.prerelease == 0 then
+            patch = patch + 1
+        end
+    elseif part == "prerelease" then
+        if #v.prerelease == 0 then
+            patch = patch + 1
+            pre = id and { id, "0" } or { "0" }
+        else
+            for i, x in ipairs(v.prerelease) do
+                pre[i] = x
+            end
+            local last = pre[#pre]
+            if last:match("^%d+$") then
+                pre[#pre] = tostring(math.tointeger(tonumber(last)) + 1)
+            else
+                pre[#pre + 1] = "0"
+            end
+        end
+    else
+        error(`invalid part '$part'`, 2)
+    end
+    return setmetatable({ major = major, minor = minor, patch = patch, prerelease = pre, build = {} }, Version)
+end
+
+-- Ranges -----------------------------------------------------------------------
+
+-- A partial version has nil for each wildcard part.
+local function partial(text, source)
+    text = text:gsub("^[v=]", "")
+    local ma, mi, pa, rest = text:match("^([%dxX*]+)%.?([%dxX*]*)%.?([%dxX*]*)(.*)$")
+    if ma == nil then
+        error(`invalid range '$source'`, 4)
+    end
+    local function part(p)
+        if p == "" or p == "x" or p == "X" or p == "*" then
+            return nil
+        end
+        return math.tointeger(tonumber(p))
+    end
+    local pre = rest:match("^%-([^+]*)") or nil
+    return { major = part(ma), minor = part(mi), patch = part(pa), pre = pre }
+end
+
+local function full(p, pre)
+    return M.parse(`$(p.major or 0).$(p.minor or 0).$(p.patch or 0)` .. (pre and ("-" .. pre) or ""))
+end
+
+-- A comparator is `{ op, version }`. A range is a list of sets, and a set
+-- is a list of comparators that must all hold.
+local function expand(token, source)
+    local op, rest = token:match("^([<>=~^]*)(.*)$")
+    if rest == "" or rest == "*" or rest == "x" or rest == "X" then
+        if op == "<" or op == ">" then
+            return { { "<", full({ major = 0, minor = 0, patch = 0 }, "0") } }
+        end
+        return { { ">=", full({ major = 0, minor = 0, patch = 0 }) } }
+    end
+    local p = partial(rest, source)
+    if op == "^" then
+        local low = full(p, p.pre)
+        local high
+        if (p.major or 0) > 0 or p.minor == nil then
+            high = { major = (p.major or 0) + 1, minor = 0, patch = 0 }
+        elseif p.minor > 0 or p.patch == nil then
+            high = { major = 0, minor = p.minor + 1, patch = 0 }
+        else
+            high = { major = 0, minor = 0, patch = p.patch + 1 }
+        end
+        return { { ">=", low }, { "<", full(high, "0") } }
+    elseif op == "~" or op == "~>" then
+        local low = full(p, p.pre)
+        local high
+        if p.minor == nil then
+            high = { major = p.major + 1, minor = 0, patch = 0 }
+        else
+            high = { major = p.major, minor = p.minor + 1, patch = 0 }
+        end
+        return { { ">=", low }, { "<", full(high, "0") } }
+    end
+    if p.major == nil then
+        return { { ">=", full({ major = 0, minor = 0, patch = 0 }) } }
+    end
+    if op == "" or op == "=" then
+        if p.minor == nil then
+            return { { ">=", full(p) }, { "<", full({ major = p.major + 1, minor = 0, patch = 0 }, "0") } }
+        elseif p.patch == nil then
+            return { { ">=", full(p) }, { "<", full({ major = p.major, minor = p.minor + 1, patch = 0 }, "0") } }
+        end
+        return { { "=", full(p, p.pre) } }
+    elseif op == ">" then
+        if p.minor == nil then
+            return { { ">=", full({ major = p.major + 1, minor = 0, patch = 0 }, "0") } }
+        elseif p.patch == nil then
+            return { { ">=", full({ major = p.major, minor = p.minor + 1, patch = 0 }, "0") } }
+        end
+        return { { ">", full(p, p.pre) } }
+    elseif op == ">=" then
+        return { { ">=", full(p, p.pre) } }
+    elseif op == "<" then
+        if p.minor == nil or p.patch == nil then
+            return { { "<", full(p, "0") } }
+        end
+        return { { "<", full(p, p.pre) } }
+    elseif op == "<=" then
+        if p.minor == nil then
+            return { { "<", full({ major = p.major + 1, minor = 0, patch = 0 }, "0") } }
+        elseif p.patch == nil then
+            return { { "<", full({ major = p.major, minor = p.minor + 1, patch = 0 }, "0") } }
+        end
+        return { { "<=", full(p, p.pre) } }
+    end
+    error(`invalid range '$source'`, 3)
+end
+
+local function parse_set(text, source)
+    local set = {}
+    local low, high = text:match("^%s*(%S+)%s+%-%s+(%S+)%s*$")
+    if low then
+        local pl, ph = partial(low, source), partial(high, source)
+        set[1] = { ">=", full(pl, pl.pre) }
+        if ph.major == nil then
+            set[2] = { ">=", full({ major = 0, minor = 0, patch = 0 }) }
+        elseif ph.minor == nil then
+            set[2] = { "<", full({ major = ph.major + 1, minor = 0, patch = 0 }, "0") }
+        elseif ph.patch == nil then
+            set[2] = { "<", full({ major = ph.major, minor = ph.minor + 1, patch = 0 }, "0") }
+        else
+            set[2] = { "<=", full(ph, ph.pre) }
+        end
+        set.pre = { pl.pre and full(pl, pl.pre) or nil, ph.pre and full(ph, ph.pre) or nil }
+        return set
+    end
+    text = text:gsub("([<>=~^]+)%s+", "%1")
+    local pres = {}
+    for token in text:gmatch("%S+") do
+        for _, c in ipairs(expand(token, source)) do
+            set[#set + 1] = c
+            if #c[2].prerelease > 0 and c[2].prerelease[1] ~= "0" or (#c[2].prerelease > 0 and token:find("-", 1, true)) then
+                pres[#pres + 1] = c[2]
+            end
+        end
+    end
+    if #set == 0 then
+        set[1] = { ">=", full({ major = 0, minor = 0, patch = 0 }) }
+    end
+    set.pre = pres
+    return set
+end
+
+local Range = {}
+Range.__index = Range
+
+--- Parses a range.
+---
+--- The result is a range table that `satisfies` and `max_satisfying`
+--- accept. A malformed range raises an error.
+--- @param text string The range.
+--- @return table
+function M.range(text)
+    if getmetatable(text) == Range then
+        return text
+    end
+    local sets = {}
+    for part in (text .. "||"):gmatch("(.-)||") do
+        sets[#sets + 1] = parse_set(part, text)
+    end
+    return setmetatable({ sets = sets, source = text }, Range)
+end
+
+local function holds(c, v)
+    local r = compare(v, c[2])
+    local op = c[1]
+    if op == "=" then return r == 0 end
+    if op == ">" then return r > 0 end
+    if op == ">=" then return r >= 0 end
+    if op == "<" then return r < 0 end
+    return r <= 0
+end
+
+local function set_allows(set, v)
+    for _, c in ipairs(set) do
+        if not holds(c, v) then
+            return false
+        end
+    end
+    if #v.prerelease == 0 then
+        return true
+    end
+    -- A prerelease matches only when a comparator of the set names a
+    -- prerelease of the same major, minor, and patch.
+    for _, p in pairs(set.pre or {}) do
+        if p.major == v.major and p.minor == v.minor and p.patch == v.patch then
+            return true
+        end
+    end
+    return false
+end
+
+--- Returns true if `version` is in `range`.
+---
+--- A prerelease version is in a range only when a comparator of the range
+--- names a prerelease of the same major, minor, and patch, as in npm.
+--- @param version string|table The version.
+--- @param range string|table The range.
+--- @return boolean
+function M.satisfies(version, range)
+    local v = M.parse(version)
+    for _, set in ipairs(M.range(range).sets) do
+        if set_allows(set, v) then
+            return true
+        end
+    end
+    return false
+end
+
+--- Returns the highest version of `list` that is in `range`, or `nil`.
+--- @param list table A list of versions.
+--- @param range string|table The range.
+--- @return table?
+function M.max_satisfying(list, range)
+    local r = M.range(range)
+    local best
+    for _, item in ipairs(list) do
+        local v = M.valid(item)
+        if v and M.satisfies(v, r) and (best == nil or compare(v, best) > 0) then
+            best = v
+        end
+    end
+    return best
+end
+
+--- Returns a copy of `list` sorted from the lowest to the highest version.
+--- @param list table A list of versions.
+--- @return table
+function M.sort(list)
+    local out = {}
+    for i, item in ipairs(list) do
+        out[i] = M.parse(item)
+    end
+    table.sort(out, function(a, b) return compare(a, b) < 0 end)
+    return out
+end
+
+return M
