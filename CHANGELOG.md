@@ -1,5 +1,5 @@
 # Changelog
 
-## 0.1.0
+## 1.0.0
 
-The first prototype of `semver`, written against the Lus 2.0 runtime on the `rewrite` branch.
+Version 1.0.0 is the first release of `semver`. It requires Lus 2.0.

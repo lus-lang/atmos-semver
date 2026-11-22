@@ -4,7 +4,7 @@
 --- npm: comparators, `^`, `~`, `x` wildcards, hyphen ranges, and `||`.
 ---
 --- @package semver
---- @version 0.1.0
+--- @version 1.0.0
 --- @lus 2.0
 --- @license 0BSD
 --- @repository https://github.com/lus-lang/atmos-semver
@@ -66,10 +66,10 @@ Version.__le = function(a, b) return compare(a, b) <= 0 end
 Version.__tostring = function(v)
     local text = `$(v.major).$(v.minor).$(v.patch)`
     if #v.prerelease > 0 then
-        text = text .. "-" .. table.concat(v.prerelease, ".")
+        text = `$text-$(table.concat(v.prerelease, "."))`
     end
     if #v.build > 0 then
-        text = text .. "+" .. table.concat(v.build, ".")
+        text = `$text+$(table.concat(v.build, "."))`
     end
     return text
 end
@@ -105,7 +105,7 @@ end
 --- Parses a version and returns a version table.
 ---
 --- The table has `major`, `minor`, and `patch` integers and `prerelease` and
---- `build` lists of strings. Versions compare with `<`, `<=`, and `==`, and
+--- `build` lists of strings. Versions compare with `<`, `<=`, and `==`.
 --- `tostring` formats them. A leading `v` or `=` is accepted. Any other
 --- invalid text raises an error that names the problem.
 --- @param text string The version.
@@ -163,10 +163,15 @@ end
 
 --- Returns a new version with one part increased.
 ---
---- `part` is `"major"`, `"minor"`, `"patch"`, or `"prerelease"`. Increasing a
---- part sets the lower parts to zero and drops the prerelease. Increasing a
---- prerelease adds 1 to its last numeric identifier, or appends `.0`, and
---- `id` names the prerelease when the version has none.
+--- `part` is `"major"`, `"minor"`, `"patch"`, or `"prerelease"`. Increasing
+--- the major, minor, or patch part sets the lower parts to zero and drops the
+--- prerelease. A prerelease whose lower parts are already zero becomes its
+--- release. A major increase of `2.0.0-rc.1` gives `2.0.0`. A minor increase
+--- of `2.1.0-rc.1` gives `2.1.0`. Otherwise the part increases by 1, so a
+--- major increase of `2.1.0-rc.1` gives `3.0.0`. Increasing an existing
+--- prerelease adds 1 to its last identifier when that identifier is numeric.
+--- Otherwise it appends `.0`. A version without a prerelease gets the next
+--- patch and the prerelease `0`, or `id.0` when `id` is given.
 --- @param version string|table The version.
 --- @param part string The part to increase.
 --- @param id string? The prerelease name, such as `"beta"`.
@@ -233,8 +238,8 @@ local function full(p, pre)
     return M.parse(`$(p.major or 0).$(p.minor or 0).$(p.patch or 0)` .. (pre and ("-" .. pre) or ""))
 end
 
--- A comparator is `{ op, version }`. A range is a list of sets, and a set
--- is a list of comparators that must all hold.
+-- A comparator is `{ op, version }`. A range is a list of sets. A set is a
+-- list of comparators that must all hold.
 local function expand(token, source)
     local op, rest = token:match("^([<>=~^]*)(.*)$")
     if rest == "" or rest == "*" or rest == "x" or rest == "X" then
