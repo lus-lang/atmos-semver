@@ -173,7 +173,7 @@ end
 --- @return table
 function M.increment(version, part, id)
     local v = M.parse(version)
-    local major, minor, patch = v.major, v.minor, v.patch
+    local major, minor, patch from v
     local pre = {}
     if part == "major" then
         if not (minor == 0 and patch == 0 and #v.prerelease > 0) then
